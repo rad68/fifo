@@ -1,63 +1,120 @@
 `timescale 1ns/1ps
 /*
-  Dual Clock
-	Fall ahead fifo.
-	Data shows at the output right after being written.
+  Asynchronous Dual Clock FIFO
+
+  If FIFO not empty - dout is a valid data value
+
+  Cummings approved :) Style #2
 */
 module dcfifo #(
-	parameter DEPTH = 16,
-	parameter DEPTH_l = 4,
-	parameter WIDTH = 8
+  parameter DEPTH = 16,
+  parameter WIDTH = 8
 )(
-	input										wclock,
-	input										rclock,
-	input										reset,
-	input										wr,
-	input				[WIDTH-1:0]	din,
-	input										rd,
-	output			[WIDTH-1:0]	dout,
-	output									full,
-	output									empty
+  input                     w_clock,
+  input                     r_clock,
+  input                     resetn,
+  input                     wr,
+  input         [WIDTH-1:0] din,
+  input                     rd,
+  output  logic [WIDTH-1:0] dout,
+  output  logic             full,
+  output  logic             empty
 );
 
-reg	[WIDTH-1:0] data [0:DEPTH-1];
+localparam l_DEPTH = $clog2(DEPTH);
 
-reg [DEPTH_l:0] wr_pnt;
-reg [DEPTH_l:0] rd_pnt;
+logic [l_DEPTH-1:0] r_ptr, r_ptr_next, r_ptr_sync, 
+                    w_ptr, w_ptr_next, w_ptr_sync;
+logic [l_DEPTH-2:0] r_addr, w_addr;
 
-integer i;
+/*
+  Read Clock Domain
+*/
 
-assign dout = !empty ? data[rd_pnt[DEPTH_l-1:0]] : 0;
+sync2 #(
+  .DATA_WIDTH(l_DEPTH)
+) r_sync (
+   .clock   (r_clock    )
+  ,.resetn  (resetn     )
+  ,.din     (w_ptr      )
+  ,.dout    (w_ptr_sync )
+);
 
-assign empty = wr_pnt == rd_pnt;
-assign full = (wr_pnt[DEPTH_l] != rd_pnt[DEPTH_l]) & (wr_pnt[DEPTH_l-1:0] == rd_pnt[DEPTH_l-1:0]);
+empty_gen #(
+  .DEPTH(DEPTH)
+) empty_gen (
+   .clock   (r_clock    )
+  ,.resetn  (resetn     )
+  ,.ptr1    (r_ptr_next )
+  ,.ptr2    (w_ptr_sync )
+  ,.empty   (empty      )
+);
 
-always @(posedge rclock or posedge reset)
-if (reset)
-	rd_pnt <= 0;
-else if (rd & !empty)
-	rd_pnt <= rd_pnt + 1;
-else
-	rd_pnt <= rd_pnt;
+ptr_gen #(
+  .DEPTH(DEPTH)
+) r_ptr_gen (
+   .clock   (r_clock    )
+  ,.resetn  (resetn     )
+  ,.flag    (empty      )
+  ,.inc     (rd         ) 
+  ,.ptr     (r_ptr      )
+  ,.ptr_next(r_ptr_next )
+  ,.addr    (r_addr     )
+);
 
-always @(posedge wclock or posedge reset)
-if (reset)
-	wr_pnt <= 0;
-else if (wr & !full)
-	wr_pnt <= wr_pnt + 1;
-else
-	wr_pnt <= wr_pnt;
+/*
+  Write Clock Domain
+*/
 
-always @(posedge wclock or posedge reset)
-if (reset)
-	for (i=0; i < DEPTH; i = i+1) begin
-		data[i] <= 0;
-	end
-else if (wr & !full)
-	data[wr_pnt] <= din;
-else
-	for (i=0; i < DEPTH; i = i+1) begin
-		data[i] <= data[i];
-	end
+sync2 #(
+  .DATA_WIDTH(l_DEPTH)
+) w_sync (
+   .clock   (w_clock    )
+  ,.resetn  (resetn     )
+  ,.din     (r_ptr      )
+  ,.dout    (r_ptr_sync )
+);
+
+full_gen #(
+  .DEPTH(DEPTH)
+) full_gen (
+   .clock   (w_clock    )
+  ,.resetn  (resetn     )
+  ,.ptr1    (w_ptr_next )
+  ,.ptr2    (r_ptr_sync )
+  ,.full    (full       )
+);
+
+ptr_gen #(
+  .DEPTH(DEPTH)
+) w_ptr_gen (
+   .clock   (w_clock    )
+  ,.resetn  (resetn     )
+  ,.flag    (full       )
+  ,.inc     (wr         )
+  ,.ptr     (w_ptr      )
+  ,.ptr_next(w_ptr_next )
+  ,.addr    (w_addr     )
+);
+
+/*
+  Memory
+*/
+logic mem_wr;
+assign mem_wr = wr && !full;
+
+mem #(
+   .DEPTH(DEPTH)
+  ,.WIDTH(WIDTH)
+) mem (
+   .clock   (w_clock  )
+  ,.resetn  (resetn   )
+  ,.en      (mem_wr   ) 
+  ,.r_addr  (r_addr   )
+  ,.r_data  (dout     )
+  ,.w_addr  (w_addr   )
+  ,.w_data  (din      )
+);
 
 endmodule
+
